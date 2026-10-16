@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "INDEXER_SCHEDULE": "0 0 * * * *",
+    "AZURE_TENANT_ID": "<tenant id>",
+    "AZURE_CLIENT_ID": "<app registration client id>",
+    "AZURE_CLIENT_SECRET": "<app registration client secret>",
+    "AZURE_SEARCH_ENDPOINT": "https://<search-service>.search.windows.net",
+    "AZURE_SEARCH_INDEX": "agents",
+    "STATE_STORAGE_ACCOUNT_URL": "https://<storage-account>.blob.core.windows.net/",
+    "STATE_CONTAINER": "indexer-state",
+    "GRAPH_BASE_URL": "https://graph.microsoft.com/v1.0",
+    "AGENTS_ONLY": "true"
+  }
+}

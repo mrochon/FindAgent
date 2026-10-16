@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+infra/
+tests/
+local.settings.json
+deploy.ps1

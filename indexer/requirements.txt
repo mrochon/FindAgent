@@ -1,0 +1,5 @@
+azure-functions>=1.21
+azure-identity>=1.19
+azure-search-documents>=11.5,<12
+azure-storage-blob>=12.23
+requests>=2.32

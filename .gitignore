@@ -1,0 +1,48 @@
+# --- Secrets and machine-specific config ---
+# Live MCP config with the API key; .mcp.example.json is the shared template.
+.mcp.json
+# Azure Functions local settings (contain the app registration secret).
+local.settings.json
+.env
+.env.*
+!.env.example
+# Claude Code personal settings.
+.claude/settings.local.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# --- Azure Functions / local tooling ---
+.python_packages/
+bin/
+obj/
+.azurite/
+__azurite_db*.json
+__blobstorage__/
+__queuestorage__/
+
+# --- Bicep / deployment artifacts ---
+# Compiled ARM templates (Bicep files are the source of truth).
+**/infra/*.json
+!**/infra/bicepconfig.json
+grant*.json
+
+# --- Editors and OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,5 @@
+mcp>=1.12,<2
+azure-identity>=1.19
+azure-search-documents>=11.5,<12
+aiohttp>=3.10
+uvicorn>=0.30

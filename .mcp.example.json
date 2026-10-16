@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-finder": {
+      "type": "http",
+      "url": "${FINDAGENT_MCP_URL:-http://localhost:8000/mcp}",
+      "headers": {
+        "x-api-key": "${FINDAGENT_MCP_KEY:-}"
+      }
+    }
+  }
+}
