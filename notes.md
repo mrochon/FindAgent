@@ -7,8 +7,13 @@ Not clear which API should be used here. Documentation does not clearly state th
 
 | API | Conceptual layer | Purpose | Status |
 |---|---|---|---
-| /copilot/agentRegistrations | Registration object | Manage an individual agent's registration, metadata, and card | Preview
+| /copilot/agentRegistrations | Registration object | Manage an individual agent's registration, metadata, and card. CRUD but **no** List! | Preview
 | /copilot/admin/catalog/packages | Tenant inventory/catalog | Discover what agents are present and available in the tenant | Released
 
+
+### Questions
+
+1. Planning to use /atalog/packages. What may I be missing?
+2. Which API to use to create Entra artifacts only (no setup, registry)? Entra PS module or Graph?
 
 
