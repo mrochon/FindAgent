@@ -1,36 +1,40 @@
 ## Query and response examples
 
-Following are sample example requests executed though an agent (Claude Client) using the FindAgent MCP server.
+Following are examples of queries executed though an agent (Claude Client) using the FindAgent MCP server.
 
 ### Publishers
 **Query**
 
-```
+<div style="border:1px solid #ccc; padding:10px;">
 Which publishers have agents? List the top 5 by agent count.
-```
+</div>
 
 **Response**
 
-```
+<div style="border:1px solid #ccc; padding:10px;">
 Here are the top 5 publishers by agent count:
 
-#	Publisher	Agents
-1	Microsoft Corporation	30
-2	Apps 365 & HR365	10
-3	GlobalData Plc	5
-4	Loopio	4
-5	OpenText Americas	4
+| Rank| Publisher |	Agents |
+|--|--|--|
+| 1	| Microsoft Corporation |	30 |
+| 2 |	Apps 365 & HR365 |	10
+| 3	| GlobalData Plc |	5
+| 4	| Loopio |	4
+| 5	| OpenText Americas |	4
 Loopio and OpenText are tied at 4 agents. Other publishers may also have 4 and simply fell outside the top 5.
-```
+</div>
+
 ### Employee onboarding
 **Query**
 
-```
+<div style="border:1px solid #ccc; padding:10px;">
 Use agent-finder to find agents that help with new hires.
-```
+</div>
+
 
 **Response**
 
+<div style="border:1px solid #ccc; padding:10px;">
 Two agents in the catalog are built specifically for new-hire onboarding, and a few others help with it.
 
 **Built for onboarding**
@@ -54,3 +58,4 @@ Also useful for new hires:
 - If your onboarding material already lives in M365, **Day One Employee Onboarding** is the simplest choice, because it works from that content and doesn't need a third-party HR system.
 - If HR wants to track onboarding tasks and progress, look at **Onboarding 365 AI Agent**. It likely needs the HR365 platform, so check before choosing it.
 
+</div>
