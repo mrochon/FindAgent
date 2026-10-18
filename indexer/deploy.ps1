@@ -6,46 +6,37 @@ param(
     [Parameter(Mandatory)][string]$ResourceGroup,
     [string]$Location = 'eastus',
     [string]$BaseName = 'findagent',
+    # Subscription name or ID. Defaults to the Azure CLI's current subscription.
+    [string]$Subscription,
     [switch]$SkipGraphPermission
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/../scripts/Graph.ps1"
 
 $graphAppId = '00000003-0000-0000-c000-000000000000'
 $graphRole = 'CopilotPackages.Read.All'
 
+$account = Resolve-Subscription $Subscription
+$sub = $account.id
+$GraphSubscriptionId = $sub
+
 function Grant-GraphPermission([string]$PrincipalId) {
-    $graphSpId = az ad sp show --id $graphAppId --query id -o tsv
-    $roleId = az ad sp show --id $graphAppId --query "appRoles[?value=='$graphRole'].id | [0]" -o tsv
-    if (-not $roleId) { throw "Graph app role $graphRole not found in this tenant." }
+    $graphSp = Get-ServicePrincipalByAppId $graphAppId
+    $roleId = ($graphSp.appRoles | Where-Object value -eq $graphRole).id
+    if (-not $roleId) { throw "Graph app role $graphRole not found in tenant $($account.tenantId)." }
 
-    $uri = "https://graph.microsoft.com/v1.0/servicePrincipals/$PrincipalId/appRoleAssignments"
-    $body = Join-Path ([IO.Path]::GetTempPath()) "grant-$PrincipalId.json"
-    @{ principalId = $PrincipalId; resourceId = $graphSpId; appRoleId = $roleId } | ConvertTo-Json | Set-Content $body
-    try {
-        # A newly created managed identity can take a few minutes to replicate in Entra ID;
-        # until then Graph rejects the assignment ("Not a valid reference update").
-        for ($attempt = 1; $attempt -le 10; $attempt++) {
-            $existing = az rest --method GET --uri $uri --query "value[?appRoleId=='$roleId'] | length(@)" -o tsv 2>$null
-            if ($existing -gt 0) { Write-Host "$graphRole already granted."; return }
-
-            az rest --method POST --uri $uri --body "@$body" --output none 2>$null
-            if (-not $LASTEXITCODE) { Write-Host "Granted $graphRole."; return }
-
-            Write-Host "Identity not ready in Entra ID yet; retrying in 30s ($attempt/10)..."
-            Start-Sleep -Seconds 30
-        }
-        throw "Could not grant $graphRole to $PrincipalId. See 'Granting the Graph permission separately' in README.md."
-    }
-    finally {
-        Remove-Item $body -ErrorAction SilentlyContinue
-    }
+    $path = "servicePrincipals/$PrincipalId/appRoleAssignments"
+    $existing = try { (Invoke-Graph GET $path).value | Where-Object appRoleId -eq $roleId } catch { $null }
+    if ($existing) { Write-Host "$graphRole already granted."; return }
+    Invoke-GraphPostWithRetry $path @{ principalId = $PrincipalId; resourceId = $graphSp.id; appRoleId = $roleId } "grant $graphRole to the indexer identity"
 }
 
-az group create --name $ResourceGroup --location $Location --output none
+az group create --subscription $sub --name $ResourceGroup --location $Location --output none
 if ($LASTEXITCODE) { throw 'Resource group creation failed.' }
 
 # The Graph grant is done below rather than in Bicep, so it can wait for the new identity to replicate.
 $outputs = az deployment group create `
+    --subscription $sub `
     --resource-group $ResourceGroup `
     --template-file "$PSScriptRoot/infra/main.bicep" `
     --parameters baseName=$BaseName assignGraphPermission=false `
@@ -58,6 +49,8 @@ if (-not $SkipGraphPermission) {
 
 Push-Location $PSScriptRoot
 try {
+    # Core Tools publishes to the CLI's current subscription, so make sure that's the one we deployed to.
+    az account set --subscription $sub
     func azure functionapp publish $outputs.functionAppName.value --python
     if ($LASTEXITCODE) { throw 'Function publish failed.' }
 }

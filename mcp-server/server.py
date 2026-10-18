@@ -1,9 +1,12 @@
 """MCP server that lets agents discover Copilot agents indexed in Azure AI Search."""
 
-import hmac
+import asyncio
+import logging
 import os
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
+import jwt
 import uvicorn
 from azure.identity.aio import DefaultAzureCredential
 from azure.search.documents.aio import SearchClient
@@ -15,8 +18,21 @@ from mcp.server.fastmcp import FastMCP
 
 SEARCH_ENDPOINT = os.environ["AZURE_SEARCH_ENDPOINT"]
 INDEX_NAME = os.environ.get("AZURE_SEARCH_INDEX", "agents")
-API_KEY = os.environ.get("MCP_API_KEY")
 PORT = int(os.environ.get("PORT", "8000"))
+
+# Microsoft Entra ID app registration that represents this MCP server's API.
+AUTH_TENANT_ID = os.environ.get("MCP_AUTH_TENANT_ID")
+AUTH_CLIENT_ID = os.environ.get("MCP_AUTH_CLIENT_ID")
+AUTH_APP_ID_URI = os.environ.get("MCP_AUTH_APP_ID_URI") or (AUTH_CLIENT_ID and f"api://{AUTH_CLIENT_ID}")
+AUTH_REQUIRED_ROLE = os.environ.get("MCP_AUTH_REQUIRED_ROLE", "agent.find.all")
+AUTH_DISABLED = os.environ.get("MCP_AUTH_DISABLED", "").lower() == "true"
+# Public URL of the MCP endpoint, advertised in the OAuth protected resource metadata.
+RESOURCE_URL = os.environ.get("MCP_RESOURCE_URL", f"http://localhost:{PORT}/mcp")
+# Microsoft Entra ID rejects the RFC 8707 `resource` parameter that MCP clients send once they discover
+# this metadata (AADSTS9010010), so it can be turned off for clients configured with the auth server directly.
+PUBLISH_RESOURCE_METADATA = os.environ.get("MCP_PUBLISH_RESOURCE_METADATA", "true").lower() == "true"
+# Delegated scope interactive clients request; the role check is what grants access.
+USER_SCOPE = "access_as_user"
 
 SUMMARY_FIELDS = [
     "packageId",
@@ -134,30 +150,112 @@ async def list_publishers(
     return [{"publisher": f["value"], "agentCount": f["count"]} for f in facets.get("publisher", [])]
 
 
-class ApiKeyMiddleware:
-    """Requires `x-api-key: <key>` or `Authorization: Bearer <key>` on every HTTP request."""
+class EntraAuthMiddleware:
+    """Requires a Microsoft Entra ID access token for this API that carries the required app role.
 
-    def __init__(self, app: ASGIApp, key: str) -> None:
+    Works for delegated (user) and application tokens alike: in both, the app roles assigned to the
+    caller appear in the `roles` claim. Also serves the OAuth protected resource metadata (RFC 9728)
+    so MCP clients can discover where to sign in, unless `resource_url` is None.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        tenant_id: str,
+        audiences: list[str],
+        required_role: str,
+        resource_url: str | None,
+        scopes_supported: list[str],
+    ) -> None:
         self._app = app
-        self._key = key.encode()
+        self._issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+        self._jwks = jwt.PyJWKClient(f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys", lifespan=3600)
+        self._audiences = audiences
+        self._required_role = required_role
+
+        self._metadata_paths: set[str] = set()
+        self._metadata_url: str | None = None
+        if resource_url is None:
+            return
+        resource = urlparse(resource_url)
+        well_known = "/.well-known/oauth-protected-resource"
+        self._metadata_paths = {well_known, well_known + resource.path}
+        self._metadata_url = f"{resource.scheme}://{resource.netloc}{well_known}{resource.path}"
+        self._metadata = {
+            "resource": resource_url,
+            "authorization_servers": [self._issuer],
+            "scopes_supported": scopes_supported,
+            "bearer_methods_supported": ["header"],
+        }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            headers = dict(scope["headers"])
-            supplied = headers.get(b"x-api-key", b"")
-            auth = headers.get(b"authorization", b"")
-            if not supplied and auth[:7].lower() == b"bearer ":
-                supplied = auth[7:]
-            if not hmac.compare_digest(supplied, self._key):
-                await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
-                return
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        if scope["path"] in self._metadata_paths:
+            await JSONResponse(self._metadata)(scope, receive, send)
+            return
+        if not self._metadata_paths and scope["path"].startswith("/.well-known/oauth-protected-resource"):
+            await JSONResponse({"error": "not_found"}, status_code=404)(scope, receive, send)
+            return
+
+        auth = dict(scope["headers"]).get(b"authorization", b"").decode()
+        if auth[:7].lower() != "bearer ":
+            await self._reject(scope, receive, send, 401)
+            return
+        try:
+            # Key lookup may hit the network on a cache miss, so keep it off the event loop.
+            claims = await asyncio.to_thread(self._validate, auth[7:].strip())
+        except jwt.PyJWTError as e:
+            logging.warning("Rejected access token: %s", e)
+            await self._reject(scope, receive, send, 401, "invalid_token", "The access token is invalid or expired.")
+            return
+        if self._required_role not in claims.get("roles", []):
+            logging.warning("Token for %s lacks role %s", claims.get("oid") or claims.get("azp"), self._required_role)
+            await self._reject(
+                scope, receive, send, 403, "insufficient_scope", f"The caller is not assigned the '{self._required_role}' role."
+            )
+            return
         await self._app(scope, receive, send)
+
+    def _validate(self, token: str) -> dict:
+        key = self._jwks.get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            key.key,
+            algorithms=["RS256"],
+            audience=self._audiences,
+            issuer=self._issuer,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+
+    async def _reject(
+        self, scope: Scope, receive: Receive, send: Send, status: int, error: str | None = None, description: str | None = None
+    ) -> None:
+        params = [f'resource_metadata="{self._metadata_url}"'] if self._metadata_url else []
+        if error:
+            params += [f'error="{error}"', f'error_description="{description}"']
+        challenge = "Bearer " + ", ".join(params) if params else "Bearer"
+        body = {"error": error or "unauthorized", "error_description": description or "A bearer token is required."}
+        await JSONResponse(body, status_code=status, headers={"WWW-Authenticate": challenge})(scope, receive, send)
 
 
 def main() -> None:
     app: ASGIApp = mcp.streamable_http_app()
-    if API_KEY:
-        app = ApiKeyMiddleware(app, API_KEY)
+    if AUTH_DISABLED:
+        logging.warning("MCP_AUTH_DISABLED=true: the server accepts unauthenticated requests.")
+    elif not (AUTH_TENANT_ID and AUTH_CLIENT_ID):
+        raise SystemExit("Set MCP_AUTH_TENANT_ID and MCP_AUTH_CLIENT_ID, or MCP_AUTH_DISABLED=true for local testing.")
+    else:
+        app = EntraAuthMiddleware(
+            app,
+            tenant_id=AUTH_TENANT_ID,
+            # v2 tokens carry the client ID as audience; accept the App ID URI too.
+            audiences=[AUTH_CLIENT_ID, AUTH_APP_ID_URI],
+            required_role=AUTH_REQUIRED_ROLE,
+            resource_url=RESOURCE_URL if PUBLISH_RESOURCE_METADATA else None,
+            scopes_supported=[f"{AUTH_APP_ID_URI}/{USER_SCOPE}"],
+        )
     uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 

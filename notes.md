@@ -17,3 +17,15 @@ Not clear which API should be used here. Documentation does not clearly state th
 2. Which API to use to create Entra artifacts only (no setup, registry)? Entra PS module or Graph?
 
 
+Deployment
+
+
+```
+az login --tenant 7d1abfb9-9f4e-4ec6-8280-722dd7bf9b50
+# 1. Indexer + search service (see "Permissions needed to deploy" below).
+./indexer/deploy.ps1 -ResourceGroup rg-findagent -Location westus2
+
+# 2. MCP server, in the same resource group, pointed at the search service from step 1.
+./mcp-server/deploy.ps1 -ResourceGroup rg-findagent -SearchServiceName <searchServiceName output>
+```
+

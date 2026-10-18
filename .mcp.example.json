@@ -2,9 +2,12 @@
   "mcpServers": {
     "agent-finder": {
       "type": "http",
-      "url": "${FINDAGENT_MCP_URL:-http://localhost:8000/mcp}",
-      "headers": {
-        "x-api-key": "${FINDAGENT_MCP_KEY:-}"
+      "url": "https://<mcpEndpoint output>/mcp",
+      "oauth": {
+        "clientId": "<testClientId output>",
+        "callbackPort": 33418,
+        "scopes": "<userScope output>",
+        "authServerMetadataUrl": "https://login.microsoftonline.com/<tenantId output>/v2.0/.well-known/openid-configuration"
       }
     }
   }
