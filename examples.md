@@ -5,13 +5,13 @@ Following are examples of queries executed though an agent (Claude Client) using
 ### Publishers
 **Query**
 
-<div style="border:1px solid #ccc; padding:10px;">
+<div style="border:1px solid #ccc; padding:10px;margin:5px;">
 Which publishers have agents? List the top 5 by agent count.
 </div>
 
 **Response**
 
-<div style="border:1px solid #ccc; padding:10px;">
+<div style="border:1px solid #ccc; padding:10px;margin:5px;">
 Here are the top 5 publishers by agent count:
 
 | Rank| Publisher |	Agents |
@@ -27,14 +27,14 @@ Loopio and OpenText are tied at 4 agents. Other publishers may also have 4 and s
 ### Employee onboarding
 **Query**
 
-<div style="border:1px solid #ccc; padding:10px;">
+<div style="border:1px solid #ccc; padding:10px;margin:5px;">
 Use agent-finder to find agents that help with new hires.
 </div>
 
 
 **Response**
 
-<div style="border:1px solid #ccc; padding:10px;">
+<div style="border:1px solid #ccc; padding:10px;margin:5px;">
 Two agents in the catalog are built specifically for new-hire onboarding, and a few others help with it.
 
 **Built for onboarding**

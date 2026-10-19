@@ -1,3 +1,5 @@
+### Which API?
+
 [Agent registration API (preview)](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/overview) 
 best for registering and managing registrations of agent cards.
 
@@ -16,8 +18,12 @@ Not clear which API should be used here. Documentation does not clearly state th
 1. Planning to use /atalog/packages. What may I be missing?
 2. Which API to use to create Entra artifacts only (no setup, registry)? Entra PS module or Graph?
 
+### Issues
 
-Deployment
+1. MCP Inspector has a problem with Entra restrictions on reply url (http: may only use localhost, Inspector requires 127.0.0.1)
+
+
+### Deployment
 
 
 ```
