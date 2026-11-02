@@ -35,6 +35,10 @@ var appName = 'ca-${name}-mcp'
 var appIdUri = 'api://${tenant().tenantId}/${name}-mcp-${suffix}'
 var userScope = 'access_as_user'
 var userScopeId = guid(resourceGroup().id, baseName, 'scope', userScope)
+// Optional scope: callers whose token has it also get the delegated permissions required by each agent's
+// Entra agent identity blueprint.
+var requiredPermissionsScope = 'mcp.requiredpermissions'
+var requiredPermissionsScopeId = guid(resourceGroup().id, baseName, 'scope', requiredPermissionsScope)
 var appRoleId = guid(resourceGroup().id, baseName, 'role', requiredRole)
 
 var roles = {
@@ -111,6 +115,16 @@ resource apiApp 'Microsoft.Graph/applications@v1.0' = {
         userConsentDisplayName: 'Search the agent catalog'
         userConsentDescription: 'Allows the app to search the agent catalog on your behalf.'
       }
+      {
+        id: requiredPermissionsScopeId
+        value: requiredPermissionsScope
+        type: 'User'
+        isEnabled: true
+        adminConsentDisplayName: 'Read the permissions agents require'
+        adminConsentDescription: 'Allows the app to read, on behalf of the signed-in user, the delegated permissions required by agent identity blueprints in the agent catalog.'
+        userConsentDisplayName: 'Read the permissions agents require'
+        userConsentDescription: 'Allows the app to read, on your behalf, the delegated permissions that agents in the catalog require.'
+      }
     ]
   }
   appRoles: [
@@ -143,7 +157,7 @@ resource testClient 'Microsoft.Graph/applications@v1.0' = {
   requiredResourceAccess: [
     {
       resourceAppId: apiApp.appId
-      resourceAccess: [{ id: userScopeId, type: 'Scope' }]
+      resourceAccess: [{ id: userScopeId, type: 'Scope' }, { id: requiredPermissionsScopeId, type: 'Scope' }]
     }
   ]
 }
@@ -231,6 +245,9 @@ output apiAppIdUri string = appIdUri
 output apiServicePrincipalId string = apiSp.id
 output appRoleId string = appRoleId
 output userScope string = '${appIdUri}/${userScope}'
+output requiredPermissionsScope string = '${appIdUri}/${requiredPermissionsScope}'
+// Needs the Graph application permission Application.Read.All to read agent identity blueprints (deploy.ps1 grants it).
+output identityPrincipalId string = identity.properties.principalId
 output testClientId string = testClient.appId
 output testClientServicePrincipalId string = testClientSp.id
 output testClientCallbackPort int = testClientCallbackPort

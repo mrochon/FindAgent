@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 from azure.identity import DefaultAzureCredential
 
 from .graph import CopilotPackagesClient
-from .search import AgentIndex
-from .state import WatermarkStore
+from .search import SCHEMA_VERSION, AgentIndex, is_agent
+from .state import Watermark, WatermarkStore
 
 # Re-read a little before the previous run started so clock skew or late writes aren't missed.
 # Upserts are idempotent, so the overlap is harmless.
@@ -25,7 +25,6 @@ class Settings:
     state_account_url: str
     state_container: str
     graph_base_url: str
-    agents_only: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,13 +34,17 @@ class Settings:
             state_account_url=os.environ["STATE_STORAGE_ACCOUNT_URL"],
             state_container=os.environ.get("STATE_CONTAINER", "indexer-state"),
             graph_base_url=os.environ.get("GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0"),
-            agents_only=os.environ.get("AGENTS_ONLY", "true").lower() == "true",
         )
 
 
-def is_agent(pkg: dict) -> bool:
-    # The catalog also contains plain Teams apps and Office add-ins; agents are the packages hosted in Copilot.
-    return any(h.lower() == "copilot" for h in pkg.get("supportedHosts") or [])
+def modified_since(watermark: Watermark | None) -> datetime | None:
+    """Start of the window to index, or None for a full re-index."""
+    if watermark is None:
+        return None
+    if watermark.schema_version != SCHEMA_VERSION:
+        logging.info("Index schema changed (v%s -> v%s); re-indexing all packages", watermark.schema_version, SCHEMA_VERSION)
+        return None
+    return watermark.last_run_start - WATERMARK_OVERLAP
 
 
 def run_indexer(settings: Settings) -> dict:
@@ -51,22 +54,27 @@ def run_indexer(settings: Settings) -> dict:
     index = AgentIndex(settings.search_endpoint, settings.index_name, credential)
     state = WatermarkStore(settings.state_account_url, settings.state_container, credential)
 
-    watermark = state.load()
-    since = watermark - WATERMARK_OVERLAP if watermark else None
+    since = modified_since(state.load())
     logging.info("Indexing packages modified since %s", since.isoformat() if since else "the beginning")
 
     index.ensure_index()
 
+    # Every package is indexed; to_document marks which ones are agents (isAgent), so agents that
+    # aren't hosted in Copilot are no longer dropped.
     summaries = list(graph.list_packages(since))
-    ids = [p["id"] for p in summaries if not settings.agents_only or is_agent(p)]
 
     # longDescription and activeUsers are only returned by the per-package detail endpoint.
     with ThreadPoolExecutor(DETAIL_CONCURRENCY) as pool:
-        details = [d for d in pool.map(graph.get_package, ids) if d is not None]
+        details = [d for d in pool.map(graph.get_package, [p["id"] for p in summaries]) if d is not None]
 
     indexed = index.upsert(details)
-    state.save(run_start)
+    state.save(run_start, SCHEMA_VERSION)
 
-    result = {"since": since.isoformat() if since else None, "listed": len(summaries), "indexed": indexed}
+    result = {
+        "since": since.isoformat() if since else None,
+        "listed": len(summaries),
+        "indexed": indexed,
+        "agents": sum(is_agent(d) for d in details),
+    }
     logging.info("Indexer run complete: %s", result)
     return result

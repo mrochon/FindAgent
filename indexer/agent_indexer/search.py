@@ -19,6 +19,25 @@ from azure.search.documents.indexes.models import (
 
 UPLOAD_BATCH_SIZE = 500
 ANALYZER = "en.microsoft"
+# Bump when the index gains fields or to_document maps data differently. The indexer then does one
+# full re-index, so documents indexed before the change get the new data too.
+SCHEMA_VERSION = 3
+# Package element types that are agents whatever host they run in. Plain Teams bots ("bots") aren't
+# counted: most of them predate Copilot agents.
+AGENT_ELEMENT_TYPES = {"declarativeagent", "customengineagent"}
+
+
+def is_agent(pkg: dict) -> bool:
+    """Whether a package is an agent rather than a plain Teams app or Office add-in.
+
+    Hosting in Copilot isn't enough on its own: agents from Foundry, custom frameworks or other
+    platforms can have an Entra agent identity without being hosted in Copilot.
+    """
+    if any(h.lower() == "copilot" for h in pkg.get("supportedHosts") or []):
+        return True
+    if pkg.get("agentIdentityId"):
+        return True
+    return any(t.lower() in AGENT_ELEMENT_TYPES for t in pkg.get("elementTypes") or [])
 
 
 def build_index(name: str) -> SearchIndex:
@@ -40,6 +59,10 @@ def build_index(name: str) -> SearchIndex:
         SimpleField(name="platform", type=SearchFieldDataType.String, filterable=True, facetable=True),
         SimpleField(name="availableTo", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="isBlocked", type=SearchFieldDataType.Boolean, filterable=True),
+        # Every package is indexed; this separates agents from plain Teams apps and Office add-ins.
+        SimpleField(name="isAgent", type=SearchFieldDataType.Boolean, filterable=True, facetable=True),
+        # Microsoft Entra agent identity; null when the agent isn't managed in Entra ID.
+        SimpleField(name="agentIdentityId", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="version", type=SearchFieldDataType.String),
         SimpleField(name="lastModifiedDateTime", type=SearchFieldDataType.DateTimeOffset, filterable=True, sortable=True),
     ]
@@ -85,6 +108,8 @@ def to_document(pkg: dict) -> dict:
         "platform": pkg.get("platform"),
         "availableTo": pkg.get("availableTo"),
         "isBlocked": pkg.get("isBlocked"),
+        "isAgent": is_agent(pkg),
+        "agentIdentityId": pkg.get("agentIdentityId") or None,
         "version": pkg.get("version"),
         "lastModifiedDateTime": _parse_datetime(pkg.get("lastModifiedDateTime")),
     }

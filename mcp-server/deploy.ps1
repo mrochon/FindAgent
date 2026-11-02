@@ -12,12 +12,20 @@ param(
     # Subscription name or ID. Defaults to the Azure CLI's current subscription.
     [string]$Subscription,
     # Don't assign the role to the signed-in user (assign it to others later; see README).
-    [switch]$SkipRoleAssignment
+    [switch]$SkipRoleAssignment,
+    # Don't grant the server identity the Graph permission for reading agent blueprints (needs an Entra
+    # admin; see README). Without it, the mcp.requiredpermissions scope returns errors instead of permissions.
+    [switch]$SkipGraphPermission
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/../scripts/Graph.ps1"
 
 $azureCliAppId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
+$graphAppId = '00000003-0000-0000-c000-000000000000'
+# Reads agent identities, agent identity blueprints and the resource APIs their permissions belong to.
+$graphRole = 'Application.Read.All'
+# Delegated scopes the clients get tenant-wide consent for.
+$consentScopes = 'access_as_user mcp.requiredpermissions'
 
 $account = Resolve-Subscription $Subscription
 $sub = $account.id
@@ -30,13 +38,31 @@ function Grant-AppRole([string]$PrincipalId, [string]$ApiSpId, [string]$AppRoleI
     Invoke-GraphPostWithRetry $path @{ principalId = $PrincipalId; resourceId = $ApiSpId; appRoleId = $AppRoleId } 'assign role to signed-in user'
 }
 
-# Tenant-wide consent so the client can request the delegated scope without a consent prompt.
+# Tenant-wide consent so the client can request the delegated scopes without a consent prompt.
+# An existing grant from an earlier deployment gets any scopes it's missing added.
 function Grant-Consent([string]$ClientSpId, [string]$ApiSpId, [string]$ClientName) {
     $filter = [uri]::EscapeDataString("clientId eq '$ClientSpId' and resourceId eq '$ApiSpId'")
-    $existing = try { (Invoke-Graph GET "oauth2PermissionGrants?`$filter=$filter").value } catch { $null }
-    if ($existing) { Write-Host "Consent already granted for $ClientName."; return }
-    Invoke-GraphPostWithRetry 'oauth2PermissionGrants' `
-        @{ clientId = $ClientSpId; consentType = 'AllPrincipals'; resourceId = $ApiSpId; scope = 'access_as_user' } "consent for $ClientName"
+    $existing = try { (Invoke-Graph GET "oauth2PermissionGrants?`$filter=$filter").value | Select-Object -First 1 } catch { $null }
+    if (-not $existing) {
+        Invoke-GraphPostWithRetry 'oauth2PermissionGrants' `
+            @{ clientId = $ClientSpId; consentType = 'AllPrincipals'; resourceId = $ApiSpId; scope = $consentScopes } "consent for $ClientName"
+        return
+    }
+    $have = $existing.scope -split ' ' | Where-Object { $_ }
+    $missing = $consentScopes -split ' ' | Where-Object { $_ -notin $have }
+    if (-not $missing) { Write-Host "Consent already granted for $ClientName."; return }
+    Invoke-Graph PATCH "oauth2PermissionGrants/$($existing.id)" @{ scope = (@($have) + @($missing)) -join ' ' } | Out-Null
+    Write-Host "Done: added $($missing -join ', ') to the consent for $ClientName."
+}
+
+function Grant-GraphPermission([string]$PrincipalId) {
+    $graphSp = Get-ServicePrincipalByAppId $graphAppId
+    $roleId = ($graphSp.appRoles | Where-Object value -eq $graphRole).id
+    if (-not $roleId) { throw "Graph app role $graphRole not found in tenant $($account.tenantId)." }
+    $path = "servicePrincipals/$PrincipalId/appRoleAssignments"
+    $existing = try { (Invoke-Graph GET $path).value | Where-Object appRoleId -eq $roleId } catch { $null }
+    if ($existing) { Write-Host "$graphRole already granted."; return }
+    Invoke-GraphPostWithRetry $path @{ principalId = $PrincipalId; resourceId = $graphSp.id; appRoleId = $roleId } "grant $graphRole to the MCP server identity"
 }
 
 $template = "$PSScriptRoot/infra/main.bicep"
@@ -65,6 +91,9 @@ if ($azureCliSp) { Grant-Consent $azureCliSp.id $apiSpId 'Azure CLI' }
 if (-not $SkipRoleAssignment) {
     Grant-AppRole (Invoke-Graph GET 'me?$select=id').id $apiSpId $outputs.appRoleId.value
 }
+if (-not $SkipGraphPermission) {
+    Grant-GraphPermission $outputs.identityPrincipalId.value
+}
 
 $mcpJson = [ordered]@{
     mcpServers = [ordered]@{
@@ -83,4 +112,5 @@ $mcpJson = [ordered]@{
 
 Write-Host "`nMCP endpoint: $($outputs.mcpEndpoint.value)"
 Write-Host "API (audience): $($outputs.apiClientId.value)  scope: $($outputs.userScope.value)"
+Write-Host "Optional scope for blueprint permissions: $($outputs.requiredPermissionsScope.value) (add it to scopes, space-separated)"
 Write-Host "`n.mcp.json for Claude Code:`n$mcpJson"

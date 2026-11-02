@@ -66,6 +66,8 @@ An unknown tool, invalid arguments (for example `top: 100`) or an AI Search fail
 | `order_by` | `"relevance"`, `"activeUsers"` or `"lastModified"` | `"relevance"` | The last two sort in descending order |
 | `top` | integer, 1 to 50 | `10` | Number of agents to return |
 | `include_blocked` | boolean | `false` | Whether to include agents an admin has blocked |
+| `include_non_agents` | boolean | `false` | Whether to also return catalog packages that aren't agents (`isAgent` false), such as plain Teams apps and Office add-ins |
+| `entra_managed` | boolean | none | `true`: only agents whose access control is managed by Microsoft Entra ID (they have an Entra agent identity). `false`: only agents that aren't. Omit for both |
 
 Returns:
 
@@ -74,21 +76,47 @@ Returns:
  "agents": [{"packageId": "...", "displayName": "...", "shortDescription": "...",
              "longDescription": "first 1000 chars…", "publisher": "...", "activeUsers": 57,
              "supportedHosts": ["Copilot"], "categories": ["..."],
-             "lastModifiedDateTime": "2026-08-06T00:07:20Z", "score": 3.21}]}
+             "lastModifiedDateTime": "2026-08-06T00:07:20Z",
+             "agentIdentityId": "00000000-0000-0000-0000-000000000000", "entraManaged": true,
+             "isAgent": true, "score": 3.21}]}
 ```
 
 `totalMatches` counts all matching agents, not just those returned. `score` is the relevance score from AI Search.
 
+`agentIdentityId` is the agent's Microsoft Entra agent identity, or `null` if the agent isn't managed in Entra ID. `entraManaged` is `true` exactly when `agentIdentityId` is set.
+
+`isAgent` is `true` for agents and `false` for other catalog packages, which appear only with `include_non_agents`. See "How the indexer works" in the README for what counts as an agent.
+
+#### `blueprint` (with the `mcp.requiredpermissions` scope)
+
+When the caller's access token has the `mcp.requiredpermissions` scope, each agent with an `agentIdentityId` also gets a `blueprint` entry. Agents without an `agentIdentityId` don't get one:
+
+```json
+"blueprint": {
+  "blueprintAppId": "00001111-aaaa-2222-bbbb-3333cccc4444",
+  "blueprintDisplayName": "Sales agent blueprint",
+  "requiredDelegatedPermissions": [
+    {"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceDisplayName": "Microsoft Graph",
+     "scopes": ["Mail.Read", "User.Read"]}
+  ]
+}
+```
+
+- **Contents:** `requiredDelegatedPermissions` lists the delegated (`Scope`) entries of the blueprint's `requiredResourceAccess`, grouped by resource API. Application permissions aren't included.
+- **Unresolved names:** a scope ID that the resource API's service principal doesn't define is returned as the raw ID. If the resource has no service principal in the tenant, `resourceDisplayName` is `null`.
+- **Failures:** if the agent identity or blueprint can't be read, the entry is `{"error": "..."}` instead. The rest of the result is unaffected.
+
 ### `get_agent`
 
 - **Argument:** `package_id` (string, required), the `packageId` from a search result.
-- **Returns:** everything the index holds for that agent: the fields above with the full `longDescription`, plus `elementTypes`, `type`, `platform`, `availableTo`, `isBlocked` and `version`.
+- **Returns:** everything the index holds for that agent: the fields above with the full `longDescription`, plus `elementTypes`, `type`, `platform`, `availableTo`, `isBlocked` and `version`. It includes `agentIdentityId` and `entraManaged` as well.
 - **Not found:** it returns `{"error": "No agent with packageId '...'"}` as a normal result, not with `isError` set.
-- **Blocked agents:** they aren't filtered out here.
+- **Blocked agents and non-agents:** neither is filtered out here, so any catalog package can be looked up. Check `isAgent` to tell them apart.
+- **Blueprint:** with the `mcp.requiredpermissions` scope, it includes the `blueprint` entry described above.
 
 ### `list_publishers`
 
-- **Argument:** `top` (integer 1 to 1000, default `100`).
+- **Arguments:** `top` (integer 1 to 1000, default `100`); `include_non_agents` (boolean, default `false`) to also count packages that aren't agents.
 - **Returns:** `[{"publisher": "Contoso", "agentCount": 12}, ...]`, ordered by agent count, highest first.
 - **Output shape:** because the result is a list, `structuredContent` wraps it as `{"result": [...]}`.
 - **Blocked agents:** the counts include them.

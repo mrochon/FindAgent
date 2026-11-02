@@ -1,5 +1,8 @@
-from agent_indexer.run import is_agent
-from agent_indexer.search import build_index, document_key, to_document
+from datetime import datetime, timezone
+
+from agent_indexer.run import WATERMARK_OVERLAP, modified_since
+from agent_indexer.search import SCHEMA_VERSION, build_index, document_key, is_agent, to_document
+from agent_indexer.state import Watermark
 
 
 def test_to_document_maps_detail_fields():
@@ -27,5 +30,34 @@ def test_document_fields_exist_in_index():
 
 def test_is_agent():
     assert is_agent({"supportedHosts": ["copilot", "Teams"]})
-    assert not is_agent({"supportedHosts": ["Outlook"]})
+    # Agents not hosted in Copilot: an Entra agent identity or an agent element type is enough.
+    assert is_agent({"supportedHosts": ["Teams"], "agentIdentityId": "aaaa-bbbb"})
+    assert is_agent({"supportedHosts": ["M365"], "elementTypes": ["CustomEngineAgent"]})
+    assert is_agent({"elementTypes": ["declarativeAgent"]})
+    # Plain Teams apps, bots and Office add-ins aren't agents.
+    assert not is_agent({"supportedHosts": ["Teams"], "elementTypes": ["bots"]})
+    assert not is_agent({"supportedHosts": ["Outlook"], "elementTypes": ["officeAddIn"], "agentIdentityId": ""})
     assert not is_agent({})
+
+
+def test_documents_are_flagged_as_agents():
+    assert to_document({"id": "x", "supportedHosts": ["Teams"], "agentIdentityId": "aaaa-bbbb"})["isAgent"] is True
+    assert to_document({"id": "y", "supportedHosts": ["Outlook"]})["isAgent"] is False
+    field = next(f for f in build_index("agents").fields if f.name == "isAgent")
+    assert field.filterable and field.facetable
+
+
+def test_agent_identity_id_is_indexed_and_filterable():
+    field = next(f for f in build_index("agents").fields if f.name == "agentIdentityId")
+    assert field.filterable
+    assert to_document({"id": "x", "agentIdentityId": "aaaa-bbbb"})["agentIdentityId"] == "aaaa-bbbb"
+    # Agents not managed in Entra ID: missing or empty both become null.
+    assert to_document({"id": "x"})["agentIdentityId"] is None
+    assert to_document({"id": "x", "agentIdentityId": ""})["agentIdentityId"] is None
+
+
+def test_schema_change_forces_full_reindex():
+    last_run = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    assert modified_since(None) is None
+    assert modified_since(Watermark(last_run, SCHEMA_VERSION - 1)) is None
+    assert modified_since(Watermark(last_run, SCHEMA_VERSION)) == last_run - WATERMARK_OVERLAP

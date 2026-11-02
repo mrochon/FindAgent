@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0",
+  "humanReadableId": "myorg/weather-reporter",
+  "agentVersion": "2.1.0",
+  "name": "Advanced Weather Reporter",
+  "description": "Provides detailed weather forecasts",
+  "url": "https://api.weather-agent.example.com/a2a",
+  "provider": {
+    "name": "Weather Corp International",
+    "url": "https://weathercorp.example.com",
+    "support_contact": "support@weathercorp.com"
+  },
+  "capabilities": {
+    "a2aVersion": "1.0",
+    "supportedMessageParts": ["text", "file", "data"],
+    "supportsPushNotifications": true
+  },
+  "authSchemes": [
+    {
+      "scheme": "apiKey",
+      "description": "Use your Weather Corp API key"
+    }
+  ],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "skills": [
+    {
+      "id": "weather_search",
+      "name": "Search Weather",
+      "description": "Provides weather info for a city or state",
+      "tags": ["weather"],
+      "examples": ["weather in LA, CA"]
+    }
+  ]
+}

@@ -19,8 +19,8 @@ The Package Management API requires a **Microsoft Agent 365** license in the ten
 
 1. Reads the watermark (start time of the last successful run) from `indexer-state/watermark.json`.
 2. Lists packages with `$filter=lastModifiedDateTime ge <watermark − 10 min>` (no filter on the first run), following `@odata.nextLink`.
-3. Keeps only agents (packages whose `supportedHosts` include `Copilot`; set `AGENTS_ONLY=false` to index everything).
-4. Fetches each package's details, because `longDescription` and `activeUsers` are only returned by `GET /packages/{id}`.
+3. Fetches each package's details, because `longDescription` and `activeUsers` are only returned by `GET /packages/{id}`.
+4. Indexes every package and sets `isAgent` on the ones that are agents (see below), so the MCP tools can leave out plain Teams apps and Office add-ins.
 5. Creates or updates the index schema, merge-uploads the documents, then saves the new watermark. A failed run doesn't advance the watermark, so the next run retries it.
 
 Index fields:
@@ -30,16 +30,33 @@ Index fields:
 | `displayName`, `longDescription`, `shortDescription` | Full-text search (`en.microsoft` analyzer, `displayName` boosted) |
 | `publisher` | Filterable, facetable (exact match) |
 | `activeUsers` | Filterable, sortable (active users in last 30 days) |
+| `agentIdentityId` | Filterable. The agent's Microsoft Entra agent identity; null when the agent's access control isn't managed in Entra ID |
+| `isAgent` | Filterable, facetable. Whether the package is an agent rather than a plain Teams app or Office add-in |
 | `supportedHosts`, `categories`, `elementTypes`, `type`, `platform`, `isBlocked`, `lastModifiedDateTime` | Extra filters |
 
-To force a full re-index, delete `watermark.json` from the `indexer-state` container.
+A package counts as an agent (`isAgent = true`) when any of these holds:
+
+- `supportedHosts` includes `Copilot`. This is Microsoft's documented way to list agents, and it covers Copilot Studio, Agent Builder and Agent Store agents.
+- It has an `agentIdentityId`. The agent registry holds agents from every platform, including Foundry, custom frameworks and other vendors. These can have an Entra agent identity without being hosted in Copilot; for example, an agent published only to Teams.
+- `elementTypes` includes `DeclarativeAgent` or `CustomEngineAgent`.
+
+Plain Teams bots (`elementTypes` = `bots`) aren't counted on their own, because most of them predate Copilot agents.
+
+Indexing every package means a full re-index fetches details for every app in the catalog, not just the agents, so it takes longer than before. Hourly runs only touch packages modified since the previous run, so they're unaffected.
+
+Agents registered only through the older `beta/copilot/agentRegistrations` API may not be in the packages catalog at all. That API is being retired in favour of the Agent 365 registry.
+
+To force a full re-index, delete `watermark.json` from the `indexer-state` container. Changing the index schema (`SCHEMA_VERSION` in [search.py](indexer/agent_indexer/search.py)) also forces one on the next run.
+
+The watermark also records the index schema version (`SCHEMA_VERSION` in [search.py](indexer/agent_indexer/search.py)). When a deployment changes it, for example by adding a field, the next run re-indexes all packages once, so documents indexed earlier get the new data. Bump the version whenever you add a field or change how documents are mapped.
 
 The index doesn't exist straight after deployment. Bicep can only create the search *service*; indexes are created through the search service's data API. The function creates or updates the index at the start of every run, so it appears after the first scheduled run (by default at the top of the next hour). To run the indexer straight away, call the function's admin endpoint with the app's master key:
 
 ```powershell
 $rg = 'rg-findagent'
 $app = az functionapp list -g $rg --query "[?contains(name,'indexer')].name | [0]" -o tsv
-$appHost = az functionapp show -g $rg -n $app --query defaultHostName -o tsv
+# `az functionapp show` returns null for defaultHostName on Flex Consumption apps; read it from the site resource.
+$appHost = az resource show -g $rg -n $app --resource-type Microsoft.Web/sites --query properties.defaultHostName -o tsv
 $key = az functionapp keys list -g $rg -n $app --query masterKey -o tsv
 Invoke-RestMethod -Method Post -Uri "https://$appHost/admin/functions/index_agents" `
     -Headers @{ 'x-functions-key' = $key } -ContentType 'application/json' -Body '{}'
@@ -53,9 +70,11 @@ Endpoint: `https://<container-app-fqdn>/mcp` (Streamable HTTP). Every request ne
 
 | Tool | Purpose |
 |---|---|
-| `search_agents(query, publisher?, min_active_users?, max_active_users?, order_by?, top?, include_blocked?)` | Full-text search with filters; blocked agents are excluded by default |
+| `search_agents(query, publisher?, min_active_users?, max_active_users?, order_by?, top?, include_blocked?, entra_managed?, include_non_agents?)` | Full-text search with filters; blocked agents and packages that aren't agents are excluded by default. Results include `agentIdentityId`, `entraManaged` and `isAgent` |
 | `get_agent(package_id)` | Full indexed record for one agent |
-| `list_publishers(top?)` | Publisher values and agent counts, for the `publisher` filter |
+
+With the `mcp.requiredpermissions` scope, `search_agents` and `get_agent` also return the delegated permissions each Entra-managed agent's blueprint requires. See "Blueprint permissions" below.
+| `list_publishers(top?, include_non_agents?)` | Publisher values and agent counts, for the `publisher` filter |
 
 ## Deploy
 
@@ -128,12 +147,37 @@ The deployment creates two app registrations:
 
 | App registration | Purpose |
 |---|---|
-| `<baseName> MCP server` | The API. Defines the app role `agent.find.all` (assignable to users and applications) and the delegated scope `access_as_user`. App ID URI: the `apiAppIdUri` output |
+| `<baseName> MCP server` | The API. Defines the app role `agent.find.all` (assignable to users and applications) and the delegated scopes `access_as_user` and `mcp.requiredpermissions`. App ID URI: the `apiAppIdUri` output |
 | `<baseName> MCP test client` | Public client (no secret) for interactive sign-in from Claude Code, with redirect URI `http://localhost:33418/callback` |
 
 Redeploying reuses the same app registrations. Bicep identifies each one by its `uniqueName`, which is derived from the resource group and `baseName`. So the same resource group and `baseName` always update the existing apps, keeping their client IDs, role and scope IDs, and the users and apps assigned to the role. A different resource group or `baseName` creates a new pair. Properties set in the Bicep (roles, scopes, redirect URI) are reset to the Bicep values on every deployment, so make lasting changes there rather than in the portal. Don't change `requiredRole` on an existing deployment: Entra ID won't remove an enabled app role, so the deployment fails. Disable the old role in the portal first.
 
 The `access_as_user` scope exists only because a client needs *some* scope to request a user token; it grants nothing by itself. Access is decided by the role. "User assignment required" is turned on for the API, so users without a role assignment can't get a token for it at all.
+
+#### Blueprint permissions (`mcp.requiredpermissions`)
+
+A client can also request the optional `mcp.requiredpermissions` scope (the `requiredPermissionsScope` output). When the access token carries it, `search_agents` and `get_agent` add a `blueprint` entry to every agent that has an `agentIdentityId`. The entry lists the delegated permissions that the agent's Entra agent identity blueprint requires. The role is still what decides access; the scope only adds this output.
+
+To work this out, the server:
+
+1. Reads the agent identity (`GET /beta/servicePrincipals/{agentIdentityId}/microsoft.graph.agentIdentity`) to get its `agentIdentityBlueprintId`.
+2. Reads that blueprint (`/beta/applications/microsoft.graph.agentIdentityBlueprint`, filtered by `appId`).
+3. Takes the `Scope` entries of its `requiredResourceAccess`, which are the delegated permissions; application permissions (`Role` entries) are left out.
+4. Turns their IDs into names using each resource's service principal (`oauth2PermissionScopes`).
+
+Results are cached for 15 minutes. If a lookup fails, the agent gets `blueprint: {"error": "..."}` and the rest of the result is unaffected.
+
+This needs the Graph application permission **Application.Read.All** for the server's managed identity. `deploy.ps1` grants it, which needs a Privileged Role Administrator or Global Administrator; pass `-SkipGraphPermission` to leave it out. The agent identity and blueprint APIs are beta-only, so they may change.
+
+Only delegated (user) tokens carry scopes. An application token, obtained with the client credentials flow, never has `scp`, so it can't turn this on.
+
+To use it from Claude Code, add the scope to `scopes` in `.mcp.json`, separated by a space:
+
+```json
+"scopes": "api://<tenant>/<name>/access_as_user api://<tenant>/<name>/mcp.requiredpermissions"
+```
+
+`deploy.ps1` grants tenant-wide consent for both scopes to the test client and the Azure CLI. On an existing deployment it adds the new scope to the consent that's already there.
 
 The server does **not** publish OAuth protected resource metadata (RFC 9728) by default. MCP clients that discover it send its `resource` URL to the authorization server as the RFC 8707 `resource` parameter, and Entra ID rejects that token request with `AADSTS9010010` (the resource doesn't match the requested `api://` scope). Claude Code shows this as a sign-in that succeeds in the browser but never finishes connecting. Instead, clients are configured with the authorization server and scope directly, as in the `.mcp.json` that `deploy.ps1` prints. To publish the metadata anyway (for example, for a client that needs discovery and doesn't send `resource`), deploy with the Bicep parameter `publishResourceMetadata=true`, which sets `MCP_PUBLISH_RESOURCE_METADATA=true` on the container. The server then serves it at `/.well-known/oauth-protected-resource` and points its `401` responses to it.
 
@@ -266,7 +310,7 @@ The Azure CLI sign-in can't get a Graph token with `CopilotPackages.Read.All`, s
    | `STATE_STORAGE_ACCOUNT_URL` | `https://<storage account>.blob.core.windows.net/` |
    | `STATE_CONTAINER` | A separate container such as `indexer-state-dev`, so you don't move the deployed watermark (created automatically) |
    | `AzureWebJobsStorage` | Leave as `UseDevelopmentStorage=true`, which points at Azurite |
-   | `INDEXER_SCHEDULE`, `GRAPH_BASE_URL`, `AGENTS_ONLY` | As in the sample |
+   | `INDEXER_SCHEDULE`, `GRAPH_BASE_URL` | As in the sample |
 
    `local.settings.json` contains a secret, so keep it out of source control.
 

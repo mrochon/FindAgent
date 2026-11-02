@@ -23,9 +23,6 @@ param indexerSchedule string = '0 0 * * * *'
 @description('Graph API root. Use https://graph.microsoft.com/beta for preview properties.')
 param graphBaseUrl string = 'https://graph.microsoft.com/v1.0'
 
-@description('Only index packages hosted in Copilot (agents), skipping plain Teams apps and Office add-ins.')
-param agentsOnly bool = true
-
 @description('Grant the CopilotPackages.Read.All Graph application permission to the indexer identity. Requires the deployer to be able to grant app roles (e.g. Privileged Role Administrator). On a first deployment this can fail with "Not a valid reference update" while the new identity replicates in Entra ID; rerun, or leave false and grant it afterwards (deploy.ps1 does this).')
 param assignGraphPermission bool = true
 
@@ -169,7 +166,6 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       STATE_CONTAINER: stateContainer
       GRAPH_BASE_URL: graphBaseUrl
       INDEXER_SCHEDULE: indexerSchedule
-      AGENTS_ONLY: string(agentsOnly)
     }
   }
 }

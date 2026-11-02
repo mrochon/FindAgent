@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py .
+COPY server.py blueprints.py ./
 
 RUN useradd --uid 10001 --no-create-home app
 USER app

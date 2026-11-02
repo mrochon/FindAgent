@@ -11,7 +11,6 @@
     "AZURE_SEARCH_INDEX": "agents",
     "STATE_STORAGE_ACCOUNT_URL": "https://<storage-account>.blob.core.windows.net/",
     "STATE_CONTAINER": "indexer-state",
-    "GRAPH_BASE_URL": "https://graph.microsoft.com/v1.0",
-    "AGENTS_ONLY": "true"
+    "GRAPH_BASE_URL": "https://graph.microsoft.com/v1.0"
   }
 }
